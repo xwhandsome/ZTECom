@@ -1,0 +1,16 @@
+# llama-cpp-python CUDA wheel for Windows + Python 3.11 + CUDA 12.4.
+# Keep this URL unless you change Python/CUDA targets.
+
+# Runtime
+fastapi
+uvicorn[standard]
+pydantic
+python-dateutil
+orjson
+huggingface-hub
+cuda-toolkit[cudart,cublas]==12.4.1
+llama-cpp-python @ https://github.com/abetlen/llama-cpp-python/releases/download/v0.3.4-cu124/llama_cpp_python-0.3.4-cp311-cp311-win_amd64.whl
+
+# Tests
+pytest
+httpx

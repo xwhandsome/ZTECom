@@ -38,6 +38,8 @@ TOOL_BY_INTENT = {
 }
 
 KNOWN_INTENTS = set(TOOL_BY_INTENT) | {"knowledge_query", "unknown"}
+CHAT_MODES = {"health_assistant", "tool_short"}
+TOOL_SHORT_REDIRECT = "请在健康助手中提问，我这里只处理提醒、设备、环境和通知。"
 
 
 class CareAgent:
@@ -53,15 +55,16 @@ class CareAgent:
         self.nlu = RuleNLU()
         self.tools = ToolExecutor()
 
-    def chat(self, session_id: str, user_text: str) -> dict[str, Any]:
+    def chat(self, session_id: str, user_text: str, mode: str = "health_assistant") -> dict[str, Any]:
         started = time.perf_counter()
+        mode = self._normalize_mode(mode)
         state = self.memory.load(session_id)
         user_text = user_text.strip().strip("\"“”")
 
         if state.pending_action and self._is_confirm(user_text):
-            return self.confirm(session_id, state.pending_action.get("action_id", ""), True, started)
+            return self.confirm(session_id, state.pending_action.get("action_id", ""), True, started, mode=mode)
         if state.pending_action and self._is_reject(user_text):
-            return self.confirm(session_id, state.pending_action.get("action_id", ""), False, started)
+            return self.confirm(session_id, state.pending_action.get("action_id", ""), False, started, mode=mode)
 
         if state.pending_action and state.pending_action.get("kind") == "slot_fill":
             result = self._continue_slot_fill(user_text, state)
@@ -83,7 +86,14 @@ class CareAgent:
                 False,
                 llm_used,
                 llm_status,
+                mode,
             )
+
+        if mode == "tool_short" and result.intent in {"knowledge_query", "unknown"}:
+            state.last_intent = result.intent
+            self._append_conversation(state, user_text, TOOL_SHORT_REDIRECT)
+            self.memory.save(state)
+            return self._response(started, state, TOOL_SHORT_REDIRECT, result, [], [], [], False, llm_used, llm_status, mode)
 
         if result.missing_slots:
             state.pending_action = {
@@ -94,12 +104,13 @@ class CareAgent:
                 "missing_slots": result.missing_slots,
             }
             state.last_intent = result.intent
-            self._append_conversation(state, user_text, self._ask_for_missing(result))
+            reply = self._ask_for_missing(result, short=mode == "tool_short")
+            self._append_conversation(state, user_text, reply)
             self.memory.save(state)
             return self._response(
                 started,
                 state,
-                self._ask_for_missing(result),
+                reply,
                 result,
                 [],
                 [],
@@ -107,6 +118,7 @@ class CareAgent:
                 False,
                 llm_used,
                 llm_status,
+                mode,
             )
 
         if result.intent == "knowledge_query":
@@ -115,13 +127,13 @@ class CareAgent:
             state.last_intent = result.intent
             self._append_conversation(state, user_text, reply)
             self.memory.save(state)
-            return self._response(started, state, reply, result, [], [], refs, False, llm_used, llm_status)
+            return self._response(started, state, reply, result, [], [], refs, False, llm_used, llm_status, mode)
 
         if result.intent == "unknown":
             reply = "我还没有理解这句话。可以试试说：明早 7 点提醒奶奶吃降压药，或者问卧室温度。"
             self._append_conversation(state, user_text, reply)
             self.memory.save(state)
-            return self._response(started, state, reply, result, [], [], [], False, llm_used, llm_status)
+            return self._response(started, state, reply, result, [], [], [], False, llm_used, llm_status, mode)
 
         plan_steps = self._plan(result)
         if self._requires_confirmation(result, plan_steps):
@@ -133,19 +145,19 @@ class CareAgent:
                 "slots": result.slots,
                 "plan_steps": [step.to_dict() for step in plan_steps],
             }
-            reply = self._confirmation_text(result, action_id)
+            reply = self._confirmation_text(result, action_id, short=mode == "tool_short")
             state.last_intent = result.intent
             self._append_conversation(state, user_text, reply)
             self.memory.save(state)
-            return self._response(started, state, reply, result, plan_steps, [], [], True, llm_used, llm_status)
+            return self._response(started, state, reply, result, plan_steps, [], [], True, llm_used, llm_status, mode)
 
         events = self._execute_plan(state, plan_steps)
         state.pending_action = None
         state.last_intent = result.intent
-        reply = self._reply_for_events(result, events)
+        reply = self._reply_for_events(result, events, short=mode == "tool_short")
         self._append_conversation(state, user_text, reply)
         self.memory.save(state)
-        return self._response(started, state, reply, result, plan_steps, events, [], False, llm_used, llm_status)
+        return self._response(started, state, reply, result, plan_steps, events, [], False, llm_used, llm_status, mode)
 
     def confirm(
         self,
@@ -153,17 +165,19 @@ class CareAgent:
         action_id: str,
         approved: bool,
         started: float | None = None,
+        mode: str = "health_assistant",
     ) -> dict[str, Any]:
         started = started or time.perf_counter()
+        mode = self._normalize_mode(mode)
         state = self.memory.load(session_id)
         pending = state.pending_action
         if not pending or pending.get("kind") != "tool_approval":
             result = IntentResult("confirm" if approved else "reject", confidence=0.99)
-            return self._response(started, state, "当前没有需要确认的操作。", result, [], [], [], False, False, self.llm.status().to_dict())
+            return self._response(started, state, "当前没有需要确认的操作。", result, [], [], [], False, False, self.llm.status().to_dict(), mode)
 
         if action_id and action_id != pending.get("action_id"):
             result = IntentResult("confirm", confidence=0.99)
-            return self._response(started, state, "确认编号不匹配，操作未执行。", result, [], [], [], True, False, self.llm.status().to_dict())
+            return self._response(started, state, "确认编号不匹配，操作未执行。", result, [], [], [], True, False, self.llm.status().to_dict(), mode)
 
         result = IntentResult(pending["intent"], pending.get("slots", {}), confidence=0.99)
         plan_steps = [PlanStep(**step) for step in pending.get("plan_steps", [])]
@@ -172,15 +186,15 @@ class CareAgent:
             reply = "已取消这次操作。"
             self._append_conversation(state, "拒绝确认", reply)
             self.memory.save(state)
-            return self._response(started, state, reply, result, plan_steps, [], [], False, False, self.llm.status().to_dict())
+            return self._response(started, state, reply, result, plan_steps, [], [], False, False, self.llm.status().to_dict(), mode)
 
         events = self._execute_plan(state, plan_steps)
         state.pending_action = None
         state.last_intent = result.intent
-        reply = self._reply_for_events(result, events)
+        reply = self._reply_for_events(result, events, short=mode == "tool_short")
         self._append_conversation(state, "确认执行", reply)
         self.memory.save(state)
-        return self._response(started, state, reply, result, plan_steps, events, [], False, False, self.llm.status().to_dict())
+        return self._response(started, state, reply, result, plan_steps, events, [], False, False, self.llm.status().to_dict(), mode)
 
     def reset(self, session_id: str = "demo") -> dict[str, Any]:
         state = self.memory.reset(session_id)
@@ -279,48 +293,66 @@ class CareAgent:
             return True
         return result.intent == "control_device" and bool(result.slots.get("batch"))
 
-    def _confirmation_text(self, result: IntentResult, action_id: str) -> str:
+    def _confirmation_text(self, result: IntentResult, action_id: str, short: bool = False) -> str:
         if result.intent == "notify_family":
             contact = result.slots.get("contact", "家属")
             message = result.slots.get("message", "")
+            if short:
+                return f"请确认是否通知{contact}。"
             return f"将模拟通知{contact}：{message}。请确认是否发送。确认编号：{action_id}"
         return f"该操作需要确认。确认编号：{action_id}"
 
-    def _reply_for_events(self, result: IntentResult, events: list[dict[str, Any]]) -> str:
+    def _reply_for_events(self, result: IntentResult, events: list[dict[str, Any]], short: bool = False) -> str:
         failed = next((event for event in events if not event["success"]), None)
         if failed:
             return f"操作失败：{failed['output'].get('error', '未知错误')}。"
         output = events[-1]["output"] if events else {}
 
         if result.intent == "create_reminder":
+            if short:
+                return "已创建提醒。"
             reminder = output["reminder"]
             return f"已创建用药提醒：{reminder['person']}于{reminder['time_text']}吃{reminder['medicine']}。"
         if result.intent == "update_reminder":
+            if short:
+                return "已更新提醒。"
             reminder = output["reminder"]
             return f"已更新提醒：{reminder['person']}于{reminder['time_text']}吃{reminder['medicine']}。"
         if result.intent == "query_reminder":
             reminders = output.get("reminders", [])
             if not reminders:
                 return "当前没有已保存的用药提醒。"
+            if short:
+                return f"当前有{len(reminders)}条提醒。"
             parts = [f"{item['time_text']} {item['person']}吃{item['medicine']}" for item in reminders]
             return "当前提醒：" + "；".join(parts)
         if result.intent == "query_sensor":
             sensor = output["sensor"]
+            if short:
+                return f"{output['room']} {sensor['temperature']}度，湿度{sensor['humidity']}%。"
             return f"{output['room']}当前温度{sensor['temperature']}度，湿度{sensor['humidity']}%，活动状态{sensor['motion']}。"
         if result.intent == "control_device":
+            if short:
+                return "已更新设备。"
             device = output["device"]
             temp = f"，目标温度{device['target_temp']}度" if device.get("target_temp") is not None else ""
             return f"已更新{device['room']}{device['device']}：{device['status']}{temp}。"
         if result.intent == "upsert_env_rule":
+            if short:
+                return "已保存环境规则。"
             rule = output["rule"]
             target = f"到{rule['target_temp']}度" if rule.get("target_temp") is not None else ""
             return f"已创建环境联动规则：{rule['room']}温度{rule['comparator']}{rule['threshold']}度时，{rule['action']}{rule['device']}{target}。"
         if result.intent == "notify_family":
+            if short:
+                return "已模拟通知。"
             return f"已模拟通知{output['contact']}：{output['message']}。"
         return "操作已完成。"
 
-    def _ask_for_missing(self, result: IntentResult) -> str:
+    def _ask_for_missing(self, result: IntentResult, short: bool = False) -> str:
         labels = [MISSING_LABELS.get(name, name) for name in result.missing_slots]
+        if short:
+            return "还需要：" + "、".join(labels) + "。"
         return "还需要补充：" + "、".join(labels) + "。"
 
     def _response(
@@ -335,9 +367,11 @@ class CareAgent:
         requires_confirmation: bool,
         llm_used: bool,
         llm_status: dict[str, Any],
+        mode: str = "health_assistant",
     ) -> dict[str, Any]:
         return {
             "assistant_text": assistant_text,
+            "mode": mode,
             "intent": result.intent,
             "slots": result.slots,
             "missing_slots": result.missing_slots,
@@ -364,3 +398,6 @@ class CareAgent:
 
     def _new_action_id(self) -> str:
         return f"act-{uuid.uuid4().hex[:8]}"
+
+    def _normalize_mode(self, mode: str | None) -> str:
+        return mode if mode in CHAT_MODES else "health_assistant"

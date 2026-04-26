@@ -301,6 +301,10 @@ class RuleNLU:
 
     def _looks_like_knowledge(self, text: str) -> bool:
         question_words = ["为什么", "怎么", "如何", "什么时候", "饭前", "饭后", "说明", "注意", "这个药"]
-        return any(word in text for word in question_words) and not any(
-            word in text for word in ["提醒我", "提醒奶奶", "通知", "打开", "关闭"]
-        )
+        if not any(word in text for word in question_words):
+            return False
+        if any(word in text for word in ["提醒我", "提醒奶奶", "打开", "关闭"]):
+            return False
+        if "通知" in text and not any(word in text for word in ["为什么", "规则", "说明", "注意"]):
+            return False
+        return True

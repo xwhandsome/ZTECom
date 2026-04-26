@@ -21,6 +21,15 @@ def test_api_chat_reset_state_and_confirm():
     assert created.status_code == 200
     assert created.json()["intent"] == "create_reminder"
 
+    short = client.post(
+        "/api/chat",
+        json={"session_id": "api-short", "user_text": "这个药饭前还是饭后吃", "mode": "tool_short"},
+    )
+    assert short.status_code == 200
+    assert short.json()["mode"] == "tool_short"
+    assert short.json()["knowledge_refs"] == []
+    assert "请在健康助手中提问" in short.json()["assistant_text"]
+
     pending = client.post("/api/chat", json={"session_id": "api", "user_text": "通知我儿子我今晚不舒服"}).json()
     assert pending["requires_confirmation"] is True
 

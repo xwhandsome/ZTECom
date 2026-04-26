@@ -68,6 +68,57 @@ def test_rag_returns_local_reference_after_reminder_context():
     assert "本地知识库" in result["assistant_text"]
 
 
+def test_tool_short_redirects_knowledge_questions_without_rag():
+    agent = make_agent()
+    agent.reset("s5")
+
+    result = agent.chat("s5", "这个药饭前还是饭后吃", mode="tool_short")
+
+    assert result["intent"] == "knowledge_query"
+    assert result["mode"] == "tool_short"
+    assert result["knowledge_refs"] == []
+    assert "请在健康助手中提问" in result["assistant_text"]
+
+
+def test_tool_short_keeps_tool_calls_brief():
+    agent = make_agent()
+    agent.reset("s6")
+
+    result = agent.chat("s6", "明早7点提醒奶奶吃降压药", mode="tool_short")
+    state = agent.state("s6")
+
+    assert result["intent"] == "create_reminder"
+    assert result["assistant_text"] == "已创建提醒。"
+    assert len(state["reminders"]) == 1
+
+
+def test_tool_short_notify_confirmation_runs_once():
+    agent = make_agent()
+    agent.reset("s7")
+
+    pending = agent.chat("s7", "通知我儿子我今晚不舒服", mode="tool_short")
+    action_id = pending["pending_action"]["action_id"]
+    confirmed = agent.confirm("s7", action_id, True, mode="tool_short")
+    repeated = agent.confirm("s7", action_id, True, mode="tool_short")
+
+    assert pending["requires_confirmation"] is True
+    assert pending["assistant_text"] == "请确认是否通知儿子。"
+    assert confirmed["assistant_text"] == "已模拟通知。"
+    assert confirmed["tool_events"][0]["tool_name"] == "notify_family"
+    assert repeated["assistant_text"] == "当前没有需要确认的操作。"
+
+
+def test_explains_notify_confirmation_as_knowledge_question():
+    agent = make_agent()
+    agent.reset("s8")
+
+    result = agent.chat("s8", "为什么通知家属要确认")
+
+    assert result["intent"] == "knowledge_query"
+    assert result["knowledge_refs"]
+    assert "通知家属" in result["knowledge_refs"][0]["title"]
+
+
 def test_health_does_not_require_model(monkeypatch):
     monkeypatch.delenv("ZTECOM_ENABLE_LLM", raising=False)
     monkeypatch.delenv("ZTECOM_MODEL_PATH", raising=False)

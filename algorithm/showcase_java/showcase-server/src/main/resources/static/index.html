@@ -1,0 +1,187 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>老人关怀端侧智能体</title>
+    <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+<div class="app-shell">
+    <aside class="sidebar">
+        <div class="brand">
+            <img class="brand-image" alt="老人关怀" src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=">
+            <div>
+                <div class="brand-title">端侧关怀</div>
+                <div class="brand-subtitle">Local Agent</div>
+            </div>
+        </div>
+
+        <nav class="nav-list" aria-label="主导航">
+            <button class="nav-item active" data-page="dashboard">控制中心</button>
+            <button class="nav-item" data-page="assistant">健康助手</button>
+            <button class="nav-item" data-page="tasks">代办列表</button>
+        </nav>
+
+        <section class="demo-panel" aria-label="演示 Demo">
+            <div class="side-section-title">演示 Demo</div>
+            <div class="demo-list" id="demoList"></div>
+        </section>
+
+        <div class="side-status" aria-live="polite">
+            <div class="status-row">
+                <span class="status-dot" id="pythonDot"></span>
+                <span id="pythonStatus">检测中</span>
+            </div>
+            <div class="status-line">会话：<span id="sessionLabel">demo</span></div>
+            <div class="status-line">LLM：<span id="llmStatus">-</span></div>
+            <div class="status-line">知识片段：<span id="kbChunks">-</span></div>
+            <button class="reset-button" id="resetButton">重置演示</button>
+        </div>
+    </aside>
+
+    <main class="main-content">
+        <header class="topbar">
+            <div>
+                <h1 id="pageTitle">控制中心</h1>
+                <p id="pageSubtitle">家庭状态、提醒、设备和工具调用</p>
+            </div>
+            <div class="top-actions">
+                <button class="secondary-button" id="refreshButton">刷新状态</button>
+                <button class="primary-button" data-page-link="assistant">进入对话</button>
+            </div>
+        </header>
+
+        <section class="page active" id="page-dashboard">
+            <div class="metric-strip">
+                <div class="metric">
+                    <span>用药提醒</span>
+                    <strong id="metricReminders">0</strong>
+                </div>
+                <div class="metric">
+                    <span>环境规则</span>
+                    <strong id="metricRules">0</strong>
+                </div>
+                <div class="metric">
+                    <span>最近延迟</span>
+                    <strong id="metricLatency">-</strong>
+                </div>
+                <div class="metric">
+                    <span>最近意图</span>
+                    <strong id="metricIntent">-</strong>
+                </div>
+            </div>
+
+            <div class="content-grid">
+                <section class="panel">
+                    <div class="panel-title">设备状态</div>
+                    <div class="device-grid" id="deviceGrid"></div>
+                </section>
+
+                <section class="panel">
+                    <div class="panel-title">传感器状态</div>
+                    <div class="table-wrap">
+                        <table>
+                            <thead>
+                            <tr><th>房间</th><th>温度</th><th>湿度</th><th>活动</th></tr>
+                            </thead>
+                            <tbody id="sensorRows"></tbody>
+                        </table>
+                    </div>
+                </section>
+
+                <section class="panel wide">
+                    <div class="panel-title">用药提醒</div>
+                    <div class="table-wrap">
+                        <table>
+                            <thead>
+                            <tr><th>ID</th><th>对象</th><th>药品</th><th>时间</th><th>状态</th></tr>
+                            </thead>
+                            <tbody id="reminderRows"></tbody>
+                        </table>
+                    </div>
+                </section>
+
+                <section class="panel wide">
+                    <div class="panel-title">最近工具调用</div>
+                    <div class="timeline" id="toolTimeline"></div>
+                </section>
+            </div>
+        </section>
+
+        <section class="page" id="page-assistant">
+            <div class="assistant-layout">
+                <section class="panel chat-panel">
+                    <div class="panel-title">RAG 对话</div>
+                    <div class="chat-log" id="chatLog"></div>
+                    <div class="confirm-bar hidden" id="confirmBar">
+                        <span id="confirmText">等待确认</span>
+                        <button class="primary-button" id="confirmYes">确认执行</button>
+                        <button class="secondary-button" id="confirmNo">取消</button>
+                    </div>
+                    <form class="chat-input-row" id="chatForm">
+                        <input id="chatInput" autocomplete="off" placeholder="输入指令，例如：明早7点提醒奶奶吃降压药">
+                        <button class="primary-button" type="submit">发送</button>
+                    </form>
+                </section>
+
+                <section class="panel analysis-panel">
+                    <div class="panel-title">本轮解析</div>
+                    <div class="analysis-grid">
+                        <div><span>意图</span><strong id="analysisIntent">-</strong></div>
+                        <div><span>延迟</span><strong id="analysisLatency">-</strong></div>
+                        <div><span>LLM</span><strong id="analysisLlm">-</strong></div>
+                    </div>
+                    <div class="json-block">
+                        <div class="json-title">槽位</div>
+                        <pre id="analysisSlots">{}</pre>
+                    </div>
+                    <div class="json-block">
+                        <div class="json-title">计划步骤</div>
+                        <pre id="analysisPlan">[]</pre>
+                    </div>
+                    <div class="json-block">
+                        <div class="json-title">工具事件</div>
+                        <pre id="analysisTools">[]</pre>
+                    </div>
+                    <div class="refs" id="knowledgeRefs"></div>
+                </section>
+            </div>
+        </section>
+
+        <section class="page" id="page-tasks">
+            <section class="panel">
+                <div class="panel-title">提醒、规则与通知记录</div>
+                <div class="table-wrap">
+                    <table>
+                        <thead>
+                        <tr><th>类型</th><th>内容</th><th>状态</th><th>时间</th><th>操作</th></tr>
+                        </thead>
+                        <tbody id="taskRows"></tbody>
+                    </table>
+                </div>
+            </section>
+        </section>
+    </main>
+</div>
+
+<button class="floating-button" id="floatOpen">工具助手</button>
+<section class="floating-chat hidden" id="floatChat" aria-label="工具助手浮窗">
+    <div class="floating-head">
+        <strong>工具助手</strong>
+        <button id="floatClose" aria-label="关闭">关闭</button>
+    </div>
+    <div class="float-log" id="floatLog"></div>
+    <div class="float-confirm hidden" id="floatConfirm">
+        <button class="primary-button" id="floatConfirmYes">确认执行</button>
+        <button class="secondary-button" id="floatConfirmNo">取消</button>
+    </div>
+    <form class="float-form" id="floatForm">
+        <input id="floatInput" autocomplete="off" placeholder="例如：打开卧室空调">
+        <button type="submit">发送</button>
+    </form>
+</section>
+
+<script src="/app.js"></script>
+</body>
+</html>

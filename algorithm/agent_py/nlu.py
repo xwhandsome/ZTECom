@@ -144,13 +144,13 @@ def parse_time_text(text: str, base: datetime | None = None) -> dict[str, Any] |
 
 
 def extract_medicine(text: str) -> str | None:
-    match = re.search(r"吃(?P<medicine>[^，。,.！？!?]+)", text)
+    match = re.search(r"(?:吃|服用|口服|用)(?P<medicine>[^，。,.！？!?]+)", text)
     if not match:
         return None
     medicine = match.group("medicine").strip()
     medicine = medicine.strip("\"“”")
     medicine = re.sub(r"^(点|半|药|一下|一个)$", "", medicine)
-    medicine = re.sub(r"(的时候|提醒|吧|吗|呢)$", "", medicine).strip()
+    medicine = re.sub(r"(的时候|的事项|事项|提醒|吧|吗|呢)$", "", medicine).strip()
     medicine = re.sub(r"^(饭前|饭后|早上|晚上|明天|今天)", "", medicine).strip()
     if not medicine or medicine in {"药", "这个药"}:
         return None
@@ -217,6 +217,10 @@ class RuleNLU:
             return IntentResult("confirm", confidence=0.99)
         if text in REJECT_WORDS:
             return IntentResult("reject", confidence=0.99)
+
+        if self._looks_like_sensor_query(text):
+            slots = self.extract_generic_slots(text, state)
+            return IntentResult("query_sensor", slots, 0.86, self.missing_for_intent("query_sensor", slots))
 
         if self._looks_like_knowledge(text):
             slots = {"query": text}
@@ -298,6 +302,24 @@ class RuleNLU:
     def missing_for_intent(self, intent: str, slots: dict[str, Any]) -> list[str]:
         required = REQUIRED_SLOTS.get(intent, [])
         return [name for name in required if not slots.get(name)]
+
+    def _looks_like_sensor_query(self, text: str) -> bool:
+        sensor_words = ["\u6e29\u5ea6", "\u6e7f\u5ea6", "\u4f20\u611f\u5668", "\u73af\u5883"]
+        explanation_words = [
+            "\u4e3a\u4ec0\u4e48",
+            "\u8bf4\u660e",
+            "\u89c4\u5219",
+            "\u6ce8\u610f",
+            "\u7981\u5fcc",
+            "\u7528\u6cd5",
+            "\u7528\u91cf",
+            "\u4f5c\u7528",
+        ]
+        if extract_device(text):
+            return False
+        if not any(word in text for word in sensor_words):
+            return False
+        return not any(word in text for word in explanation_words)
 
     def _looks_like_knowledge(self, text: str) -> bool:
         question_words = ["为什么", "怎么", "如何", "什么时候", "饭前", "饭后", "说明", "注意", "这个药"]

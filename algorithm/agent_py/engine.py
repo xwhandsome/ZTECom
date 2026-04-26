@@ -3,12 +3,21 @@ from __future__ import annotations
 import time
 import uuid
 import sys
+import re
 from typing import Any
 
 from .llm_adapter import LLMAdapter
 from .memory import MemoryStore, trim_event_history
 from .models import IntentResult, PlanStep, SessionState
-from .nlu import RuleNLU
+from .nlu import (
+    RuleNLU,
+    extract_action,
+    extract_contact,
+    extract_device,
+    extract_medicine,
+    extract_room,
+    parse_time_text,
+)
 from .rag import KeywordRAG
 from .tools import ToolExecutor
 
@@ -72,7 +81,7 @@ class CareAgent:
             llm_status = self.llm.status().to_dict()
         else:
             result = self.nlu.analyze(user_text, state)
-            result, llm_used, llm_status = self._maybe_apply_llm(user_text, result)
+            result, llm_used, llm_status = self._maybe_apply_llm(user_text, result, state)
 
         if result.intent == "confirm" or result.intent == "reject":
             return self._response(
@@ -212,8 +221,13 @@ class CareAgent:
             "kb_chunks": len(self.rag.chunks),
         }
 
-    def _maybe_apply_llm(self, user_text: str, result: IntentResult) -> tuple[IntentResult, bool, dict[str, Any]]:
-        should_try = result.intent == "unknown" or bool(result.missing_slots)
+    def _maybe_apply_llm(
+        self,
+        user_text: str,
+        result: IntentResult,
+        state: SessionState,
+    ) -> tuple[IntentResult, bool, dict[str, Any]]:
+        should_try = result.intent == "unknown" or (bool(result.missing_slots) and result.confidence < 0.75)
         if not should_try:
             return result, False, self.llm.status().to_dict()
 
@@ -224,12 +238,142 @@ class CareAgent:
         intent = llm_data.get("intent")
         if intent not in KNOWN_INTENTS:
             return result, False, status.to_dict()
-        slots = {**result.slots, **(llm_data.get("slots") or {})}
+        slots = self._normalize_llm_slots(user_text, intent, result.slots, llm_data.get("slots") or {}, state)
         missing = self.nlu.missing_for_intent(intent, slots)
         candidate = IntentResult(intent, slots, float(llm_data.get("confidence", 0.5)), missing, "llm")
         if result.intent == "unknown" or len(candidate.missing_slots) <= len(result.missing_slots):
             return candidate, True, status.to_dict()
         return result, False, status.to_dict()
+
+    def _normalize_llm_slots(
+        self,
+        user_text: str,
+        intent: str,
+        rule_slots: dict[str, Any],
+        llm_slots: dict[str, Any],
+        state: SessionState,
+    ) -> dict[str, Any]:
+        slots = self.nlu.extract_generic_slots(user_text, state)
+        slots.update({key: value for key, value in rule_slots.items() if value is not None})
+
+        aliases = {
+            "medicine": ["medicine", "drug", "medicine_name", "medication", "reminder_type", "task"],
+            "person": ["person", "to", "target", "person_name", "elder"],
+            "time_text": ["time_text", "time", "remind_time", "schedule_time", "datetime"],
+            "room": ["room", "location"],
+            "device": ["device", "appliance"],
+            "action": ["action", "operation"],
+            "contact": ["contact", "relation"],
+            "message": ["message", "content", "notify_message"],
+            "query": ["query", "question"],
+            "target_temp": ["target_temp", "temperature", "temp"],
+            "threshold": ["threshold", "trigger_temp"],
+            "comparator": ["comparator", "condition"],
+        }
+
+        for canonical, names in aliases.items():
+            value = next((llm_slots.get(name) for name in names if llm_slots.get(name) is not None), None)
+            if value is None:
+                continue
+            if canonical == "medicine":
+                medicine = self._normalize_medicine_value(str(value)) or extract_medicine(user_text)
+                if medicine:
+                    slots["medicine"] = medicine
+            elif canonical == "person":
+                person = self._normalize_person_value(str(value))
+                if person:
+                    slots["person"] = person
+            elif canonical == "time_text":
+                time_info = parse_time_text(str(value)) or parse_time_text(user_text)
+                if time_info:
+                    slots.update(time_info)
+                elif "time" not in slots:
+                    slots["time_text"] = str(value)
+            elif canonical == "room":
+                room = extract_room(str(value)) or str(value).strip()
+                if room:
+                    slots["room"] = room
+            elif canonical == "device":
+                device = extract_device(str(value)) or str(value).strip()
+                if device:
+                    slots["device"] = device
+            elif canonical == "action":
+                action = self._normalize_action_value(str(value))
+                if action:
+                    slots["action"] = action
+            elif canonical == "target_temp":
+                temp = self._normalize_number(value)
+                if temp is not None:
+                    slots["target_temp"] = temp
+            elif canonical == "threshold":
+                threshold = self._normalize_number(value)
+                if threshold is not None:
+                    slots["threshold"] = threshold
+            elif canonical == "comparator":
+                comparator = self._normalize_comparator_value(str(value))
+                if comparator:
+                    slots["comparator"] = comparator
+            elif canonical == "contact":
+                contact = extract_contact(str(value)) or str(value).strip()
+                if contact:
+                    slots["contact"] = contact
+            elif canonical == "message":
+                message = str(value).strip()
+                if message:
+                    slots["message"] = message
+            elif canonical == "query":
+                query = str(value).strip()
+                if query:
+                    slots["query"] = query
+
+        if intent == "create_reminder" and "medicine" not in slots:
+            medicine = self._normalize_medicine_value(user_text)
+            if medicine:
+                slots["medicine"] = medicine
+        if "time" not in slots:
+            time_info = parse_time_text(user_text)
+            if time_info:
+                slots.update(time_info)
+        if "person" not in slots:
+            slots["person"] = state.profile.get("elder_name", "奶奶")
+        return slots
+
+    def _normalize_medicine_value(self, value: str) -> str | None:
+        value = value.strip(" ，。,.！？!?\"“”")
+        medicine = extract_medicine(value) or extract_medicine("吃" + value)
+        if medicine:
+            return medicine
+        for prefix in ["提醒", "安排", "服用", "口服", "吃", "用"]:
+            if value.startswith(prefix):
+                value = value[len(prefix) :].strip()
+        value = value.replace("的事项", "").replace("事项", "").strip(" ，。,.！？!?")
+        return value if value and len(value) <= 16 and "药" in value else None
+
+    def _normalize_person_value(self, value: str) -> str | None:
+        value = value.strip(" ，。,.！？!?\"“”")
+        if value in {"老人", "家里老人"}:
+            return "奶奶"
+        return value or None
+
+    def _normalize_action_value(self, value: str) -> str | None:
+        value = value.strip().lower()
+        if value in {"on", "off", "set"}:
+            return value
+        return extract_action(value)
+
+    def _normalize_comparator_value(self, value: str) -> str | None:
+        value = value.strip()
+        if value in {"<", "低于", "小于", "less_than"}:
+            return "<"
+        if value in {">", "高于", "大于", "超过", "greater_than"}:
+            return ">"
+        return None
+
+    def _normalize_number(self, value: Any) -> int | None:
+        if isinstance(value, (int, float)):
+            return int(value)
+        match = re.search(r"\d{1,2}", str(value))
+        return int(match.group(0)) if match else None
 
     def _continue_slot_fill(self, user_text: str, state: SessionState) -> IntentResult:
         pending = state.pending_action or {}
@@ -272,8 +416,49 @@ class CareAgent:
             event_dict = event.to_dict()
             events.append(event_dict)
             state.recent_tool_events.append(event_dict)
+            follow_up = self._plan_env_rule_immediate_check(state, event_dict)
+            if follow_up:
+                follow_event = self.tools.execute(state, follow_up)
+                follow_event_dict = follow_event.to_dict()
+                events.append(follow_event_dict)
+                state.recent_tool_events.append(follow_event_dict)
         state.recent_tool_events = trim_event_history(state.recent_tool_events)
         return events
+
+    def _plan_env_rule_immediate_check(self, state: SessionState, event: dict[str, Any]) -> PlanStep | None:
+        if event.get("tool_name") != "upsert_env_rule" or not event.get("success"):
+            return None
+        rule = event.get("output", {}).get("rule") or {}
+        room = rule.get("room")
+        comparator = rule.get("comparator")
+        threshold = rule.get("threshold")
+        if not room or comparator not in {"<", ">"} or threshold is None:
+            return None
+        try:
+            threshold_value = float(threshold)
+        except (TypeError, ValueError):
+            return None
+        sensor = state.sensors.get(room) or {}
+        temperature = sensor.get("temperature")
+        if temperature is None:
+            return None
+        matched = temperature < threshold_value if comparator == "<" else temperature > threshold_value
+        if not matched:
+            return None
+        return PlanStep(
+            step_id=f"step-{uuid.uuid4().hex[:8]}",
+            tool_name="control_device",
+            args={
+                "room": room,
+                "device": rule.get("device"),
+                "action": rule.get("action"),
+                "target_temp": rule.get("target_temp"),
+                "trigger": "env_rule_immediate_check",
+                "rule_id": rule.get("id"),
+                "comparator": comparator,
+                "threshold": threshold,
+            },
+        )
 
     def _answer_with_rag(self, user_text: str, state: SessionState) -> tuple[str, list[dict[str, Any]]]:
         context_terms = []
@@ -340,9 +525,17 @@ class CareAgent:
         if result.intent == "upsert_env_rule":
             if short:
                 return "已保存环境规则。"
-            rule = output["rule"]
+            rule_output = next((event["output"] for event in events if event.get("tool_name") == "upsert_env_rule"), output)
+            rule = rule_output["rule"]
             target = f"到{rule['target_temp']}度" if rule.get("target_temp") is not None else ""
-            return f"已创建环境联动规则：{rule['room']}温度{rule['comparator']}{rule['threshold']}度时，{rule['action']}{rule['device']}{target}。"
+            triggered = any(
+                event.get("tool_name") == "control_device"
+                and event.get("input", {}).get("trigger") == "env_rule_immediate_check"
+                and event.get("success")
+                for event in events
+            )
+            suffix = "当前条件已满足，已执行设备联动。" if triggered else ""
+            return f"已创建环境联动规则：{rule['room']}温度{rule['comparator']}{rule['threshold']}度时，{rule['action']}{rule['device']}{target}。{suffix}"
         if result.intent == "notify_family":
             if short:
                 return "已模拟通知。"

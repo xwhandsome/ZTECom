@@ -134,11 +134,20 @@ class LLMAdapter:
     def _build_prompt(self, user_text: str, slots: dict[str, Any]) -> str:
         known_slots = json.dumps(slots, ensure_ascii=False)
         return (
-            "你是老人关怀端侧智能体的意图解析器，只输出一个 JSON 对象。\n"
-            "intent 只能是 create_reminder, update_reminder, query_reminder, query_sensor, "
-            "control_device, upsert_env_rule, notify_family, knowledge_query, unknown。\n"
-            "JSON 字段包括 intent, slots, confidence。不要输出解释。\n"
-            f"已知槽位: {known_slots}\n"
+            "你是老人关怀端侧智能体的意图和槽位解析器。只输出一个 JSON 对象，不要解释，不要 Markdown。\n"
+            "顶层 schema 固定为: {\"intent\": string, \"slots\": object, \"confidence\": number}。\n"
+            "intent 只能取: create_reminder, update_reminder, query_reminder, query_sensor, control_device, "
+            "upsert_env_rule, notify_family, knowledge_query, unknown。\n"
+            "slots 只能使用这些字段: medicine, person, time_text, room, device, action, target_temp, "
+            "comparator, threshold, contact, message, query。\n"
+            "不要使用 drug, medicine_name, reminder_type, to, target, person_name 等别名字段。\n"
+            "提醒吃药时，medicine 填药品名，例如 降压药；person 填老人称呼，例如 奶奶；time_text 填自然语言时间。\n"
+            "设备动作 action 只能取 on, off, set；低于用 comparator '<'，高于或超过用 comparator '>'。\n"
+            f"已知规则槽位: {known_slots}\n"
+            "示例1 用户输入: 给奶奶安排明天早晨七点服用降压药\n"
+            "示例1 JSON: {\"intent\":\"create_reminder\",\"slots\":{\"person\":\"奶奶\",\"medicine\":\"降压药\",\"time_text\":\"明天早晨七点\"},\"confidence\":0.9}\n"
+            "示例2 用户输入: 帮我查一下卧室现在温度\n"
+            "示例2 JSON: {\"intent\":\"query_sensor\",\"slots\":{\"room\":\"卧室\"},\"confidence\":0.9}\n"
             f"用户输入: {user_text}\n"
             "JSON:"
         )

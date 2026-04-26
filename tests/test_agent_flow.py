@@ -5,6 +5,45 @@ from agent_py.memory import MemoryStore
 from agent_py.rag import KeywordRAG
 
 
+class FakeLLMStatus:
+    def to_dict(self):
+        return {
+            "enabled": True,
+            "runtime_available": True,
+            "model_path": "fake.gguf",
+            "model_exists": True,
+            "loaded": True,
+            "message": "fake_runtime_ok",
+        }
+
+
+class AliasSlotLLM:
+    def status(self, probe_runtime=False):
+        return FakeLLMStatus()
+
+    def parse_intent_json(self, user_text, slots):
+        return (
+            {
+                "intent": "create_reminder",
+                "slots": {
+                    "reminder_type": "服用降压药",
+                    "to": "奶奶",
+                    "time": "明天早晨七点",
+                },
+                "confidence": 0.91,
+            },
+            FakeLLMStatus(),
+        )
+
+
+class FailingLLM:
+    def status(self, probe_runtime=False):
+        return FakeLLMStatus()
+
+    def parse_intent_json(self, user_text, slots):
+        raise AssertionError("LLM should not run for a high-confidence slot-fill prompt")
+
+
 def make_agent():
     return CareAgent(memory=MemoryStore(":memory:"), rag=KeywordRAG())
 
@@ -37,6 +76,33 @@ def test_environment_rule_is_saved():
     assert state["env_rules"][0]["room"] == "卧室"
     assert state["env_rules"][0]["threshold"] == 20
     assert state["env_rules"][0]["target_temp"] == 24
+    assert [event["tool_name"] for event in result["tool_events"]] == ["upsert_env_rule", "control_device"]
+    assert result["tool_events"][1]["input"]["trigger"] == "env_rule_immediate_check"
+    assert state["device_state"]["卧室:空调"]["status"] == "on"
+    assert state["device_state"]["卧室:空调"]["target_temp"] == 24
+
+
+def test_sensor_status_question_uses_tool_not_rag():
+    agent = make_agent()
+    agent.reset("s2_sensor")
+
+    result = agent.chat("s2_sensor", "\u5367\u5ba4\u6e29\u5ea6\u600e\u4e48\u6837")
+
+    assert result["intent"] == "query_sensor"
+    assert result["tool_events"][0]["tool_name"] == "query_sensor"
+    assert result["knowledge_refs"] == []
+
+
+def test_known_intent_missing_slot_uses_slot_fill_without_llm():
+    agent = CareAgent(memory=MemoryStore(":memory:"), rag=KeywordRAG(), llm=FailingLLM())
+    agent.reset("s2_slot_fill")
+
+    result = agent.chat("s2_slot_fill", "\u63d0\u9192\u5976\u5976\u5403\u964d\u538b\u836f")
+
+    assert result["intent"] == "create_reminder"
+    assert result["llm_used"] is False
+    assert result["missing_slots"] == ["time"]
+    assert result["requires_confirmation"] is False
 
 
 def test_notify_family_requires_confirmation_and_runs_once():
@@ -117,6 +183,22 @@ def test_explains_notify_confirmation_as_knowledge_question():
     assert result["intent"] == "knowledge_query"
     assert result["knowledge_refs"]
     assert "通知家属" in result["knowledge_refs"][0]["title"]
+
+
+def test_llm_alias_slots_are_normalized_before_planning():
+    agent = CareAgent(memory=MemoryStore(":memory:"), rag=KeywordRAG(), llm=AliasSlotLLM())
+    agent.reset("s9")
+
+    result = agent.chat("s9", "给奶奶安排明天早晨七点服用降压药")
+    state = agent.state("s9")
+
+    assert result["llm_used"] is True
+    assert result["intent"] == "create_reminder"
+    assert result["missing_slots"] == []
+    assert result["slots"]["medicine"] == "降压药"
+    assert result["slots"]["person"] == "奶奶"
+    assert result["slots"]["time_text"].endswith("07:00")
+    assert len(state["reminders"]) == 1
 
 
 def test_health_does_not_require_model(monkeypatch):

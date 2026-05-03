@@ -91,7 +91,7 @@ class KeywordRAG:
                     doc_id=chunk.doc_id,
                     title=chunk.title,
                     chunk_id=chunk.chunk_id,
-                    snippet=self._snippet(chunk.text),
+                    snippet=self._snippet(self._focused_text(chunk.text, query)),
                 )
             )
             if len(refs) >= top_k:
@@ -112,7 +112,21 @@ class KeywordRAG:
                 terms.extend(clean[index : index + size] for index in range(max(0, len(clean) - size + 1)))
         return [term for term in terms if len(term) >= 2 and term not in STOP_TERMS]
 
-    def _snippet(self, text: str, limit: int = 90) -> str:
+    def _focused_text(self, text: str, query: str) -> str:
+        if any(term in query for term in ["饭前", "饭后", "什么时候", "时间", "怎么吃", "服用"]):
+            dosage = self._extract_markdown_field(text, "用法用量")
+            if dosage:
+                return dosage
+        return text
+
+    def _extract_markdown_field(self, text: str, label: str) -> str | None:
+        match = re.search(rf"\*\*{re.escape(label)}\*\*[:：]\s*(?P<body>.*?)(?=\n\*\*|$)", text, flags=re.S)
+        if not match:
+            return None
+        body = re.sub(r"\s+", " ", match.group("body")).strip()
+        return f"{label}：{body}" if body else None
+
+    def _snippet(self, text: str, limit: int = 180) -> str:
         compact = re.sub(r"\s+", " ", text).strip()
         if len(compact) <= limit:
             return compact

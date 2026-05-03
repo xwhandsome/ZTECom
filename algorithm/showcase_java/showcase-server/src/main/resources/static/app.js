@@ -44,6 +44,7 @@ function bindNavigation() {
 
 function bindActions() {
   byId("refreshButton").addEventListener("click", refreshAll);
+  byId("taskRows").addEventListener("click", handleTaskAction);
   byId("resetButton").addEventListener("click", async () => {
     const result = await postJson("/showcase/api/reset", { session_id: SESSION_ID });
     if (isProxyProblem(result)) {
@@ -140,6 +141,10 @@ async function sendHealthText() {
     renderHealth();
     return;
   }
+  if (!isAgentResponse(response)) {
+    appendAssistantMessage("system", agentErrorMessage(response));
+    return;
+  }
 
   applyAgentResponse(response);
   appendAssistantMessage("assistant", response.assistant_text || "已收到。");
@@ -167,6 +172,10 @@ async function sendFloatText() {
     renderHealth();
     return;
   }
+  if (!isAgentResponse(response)) {
+    appendFloatMessage("system", agentErrorMessage(response));
+    return;
+  }
 
   applyAgentResponse(response);
   appendFloatMessage("assistant", response.assistant_text || "已处理。");
@@ -189,6 +198,10 @@ async function confirmPending(approved, mode, target) {
 
   if (isProxyProblem(response)) {
     appendTargetMessage(target, "system", response.message);
+    return;
+  }
+  if (!isAgentResponse(response)) {
+    appendTargetMessage(target, "system", agentErrorMessage(response));
     return;
   }
 
@@ -364,9 +377,10 @@ function renderKnowledgeRefs(refs) {
     const item = document.createElement("div");
     item.className = "ref-item";
     const title = document.createElement("strong");
+    title.className = "ref-title";
     title.textContent = ref.chunk_id ? `${ref.title || ref.doc_id || "知识片段"} · ${ref.chunk_id}` : (ref.title || ref.doc_id || "知识片段");
     const text = document.createElement("div");
-    text.className = "muted";
+    text.className = "ref-snippet";
     text.textContent = ref.snippet || "";
     item.append(title, text);
     wrap.appendChild(item);
@@ -380,29 +394,117 @@ function renderTasks() {
   const rows = [];
 
   (session.reminders || []).forEach((item) => {
-    rows.push(["用药提醒", `${item.person} ${item.time_text || item.time} 吃${item.medicine}`, item.enabled ? "启用" : "停用", item.updated_at || item.created_at || "-", "删除"]);
+    rows.push({
+      type: "用药提醒",
+      content: `${item.person} ${item.time_text || item.time} 吃${item.medicine}`,
+      status: item.enabled ? "启用" : "停用",
+      time: item.updated_at || item.created_at || "-",
+      actions: [
+        { label: item.enabled ? "停用" : "启用", action: "toggle-reminder", id: item.id, enabled: !item.enabled },
+        { label: "删除", action: "delete-reminder", id: item.id, danger: true }
+      ]
+    });
   });
   (session.env_rules || []).forEach((rule) => {
     const target = rule.target_temp == null ? "" : `到${rule.target_temp}度`;
-    rows.push(["环境规则", `${rule.room} 温度 ${rule.comparator}${rule.threshold}，${rule.action}${rule.device}${target}`, rule.enabled ? "启用" : "停用", "-", "删除"]);
+    rows.push({
+      type: "环境规则",
+      content: `${rule.room} 温度 ${rule.comparator}${rule.threshold}，${rule.action}${rule.device}${target}`,
+      status: rule.enabled ? "启用" : "停用",
+      time: "-",
+      actions: [
+        { label: rule.enabled ? "停用" : "启用", action: "toggle-rule", id: rule.id, enabled: !rule.enabled },
+        { label: "删除", action: "delete-rule", id: rule.id, danger: true }
+      ]
+    });
   });
   if (session.pending_action) {
-    rows.push(["待确认", session.pending_action.intent || "pending", "等待处理", session.pending_action.action_id || "-", "确认"]);
+    rows.push({
+      type: "待确认",
+      content: formatPendingActionText(session.pending_action),
+      status: "等待处理",
+      time: session.pending_action.action_id || "-",
+      actions: [{ label: "确认", action: "confirm-pending" }, { label: "取消", action: "cancel-pending" }]
+    });
   }
   (session.recent_tool_events || []).slice(-8).reverse().forEach((event) => {
-    rows.push(["工具事件", event.tool_name, event.success ? "成功" : "失败", event.ts || "-", "查看"]);
+    rows.push({
+      type: "工具事件",
+      content: event.tool_name,
+      status: event.success ? "成功" : "失败",
+      time: event.ts || "-",
+      actions: [{ label: "查看", action: "view-event", payload: event }]
+    });
   });
 
   if (!rows.length) {
     body.appendChild(emptyRow("暂无任务记录", 5));
     return;
   }
-  rows.forEach((values) => {
-    const tr = row(values);
-    tr.lastChild.className = "disabled-action";
-    tr.lastChild.textContent = `${values[4]}（v2）`;
-    body.appendChild(tr);
-  });
+  rows.forEach((item) => body.appendChild(taskRow(item)));
+}
+
+async function handleTaskAction(event) {
+  const button = event.target.closest("[data-task-action]");
+  if (!button || button.disabled) {
+    return;
+  }
+  const action = button.dataset.taskAction;
+  const id = button.dataset.itemId;
+  let result = null;
+
+  button.disabled = true;
+  try {
+    if (action === "toggle-reminder") {
+      result = await postJson(`/showcase/api/reminders/${encodeURIComponent(SESSION_ID)}/${encodeURIComponent(id)}/enabled`, {
+        enabled: button.dataset.enabled === "true"
+      });
+    } else if (action === "delete-reminder") {
+      if (!window.confirm("确认删除这条用药提醒？")) {
+        return;
+      }
+      result = await deleteJson(`/showcase/api/reminders/${encodeURIComponent(SESSION_ID)}/${encodeURIComponent(id)}`);
+    } else if (action === "toggle-rule") {
+      result = await postJson(`/showcase/api/env-rules/${encodeURIComponent(SESSION_ID)}/${encodeURIComponent(id)}/enabled`, {
+        enabled: button.dataset.enabled === "true"
+      });
+    } else if (action === "delete-rule") {
+      if (!window.confirm("确认删除这条环境规则？")) {
+        return;
+      }
+      result = await deleteJson(`/showcase/api/env-rules/${encodeURIComponent(SESSION_ID)}/${encodeURIComponent(id)}`);
+    } else if (action === "confirm-pending") {
+      await confirmPending(true, HEALTH_MODE, "assistant");
+      return;
+    } else if (action === "cancel-pending") {
+      await confirmPending(false, HEALTH_MODE, "assistant");
+      return;
+    } else if (action === "view-event") {
+      const raw = button.dataset.payload || "{}";
+      window.alert(pretty(JSON.parse(raw)));
+      return;
+    }
+  } finally {
+    button.disabled = false;
+  }
+
+  if (!result) {
+    return;
+  }
+  if (isProxyProblem(result)) {
+    appendAssistantMessage("system", result.message);
+    renderHealth();
+    return;
+  }
+  if (result.status === "not_found") {
+    appendAssistantMessage("system", "要操作的记录不存在，已刷新状态。");
+  }
+  if (result.state) {
+    state.session = result.state;
+    state.pendingAction = isConfirmAction(result.state.pending_action) ? result.state.pending_action : null;
+  }
+  await refreshState();
+  renderAll();
 }
 
 function renderConfirm() {
@@ -410,8 +512,23 @@ function renderConfirm() {
   byId("confirmBar").classList.toggle("hidden", !visible);
   byId("floatConfirm").classList.toggle("hidden", !visible);
   if (visible) {
-    setText("confirmText", `待确认：${state.pendingAction.intent || "操作"} · ${state.pendingAction.action_id}`);
+    const text = formatPendingActionText(state.pendingAction);
+    setText("confirmText", text);
+    setText("floatConfirmText", text);
   }
+}
+
+function formatPendingActionText(action) {
+  const slots = action && action.slots ? action.slots : {};
+  if (action && action.intent === "notify_family") {
+    return `是否通知${slots.contact || "家属"}？`;
+  }
+  if (action && action.intent === "control_device") {
+    const room = slots.room || "";
+    const device = slots.device || "设备";
+    return `是否控制${room}${device}？`;
+  }
+  return "是否执行这个操作？";
 }
 
 function appendAssistantMessage(role, text) {
@@ -458,6 +575,15 @@ async function getJson(url) {
   }
 }
 
+async function deleteJson(url) {
+  try {
+    const response = await fetch(url, { method: "DELETE" });
+    return await response.json();
+  } catch (error) {
+    return { status: "python_offline", message: "Java 代理或 Python 服务不可用" };
+  }
+}
+
 async function postJson(url, body) {
   try {
     const response = await fetch(url, {
@@ -475,8 +601,52 @@ function isProxyProblem(result) {
   return result && (result.status === "python_offline" || result.status === "python_bad_response");
 }
 
+function isAgentResponse(result) {
+  return Boolean(result && (typeof result.assistant_text === "string" || typeof result.intent === "string"));
+}
+
+function agentErrorMessage(result) {
+  if (result && result.detail) {
+    return `接口返回异常：${JSON.stringify(result.detail)}`;
+  }
+  return "接口返回异常：没有收到有效的 Agent 响应。";
+}
+
 function isConfirmAction(action) {
   return Boolean(action && action.kind === "tool_approval" && action.action_id);
+}
+
+function taskRow(item) {
+  const tr = document.createElement("tr");
+  [item.type, item.content, item.status, item.time].forEach((value) => {
+    const td = document.createElement("td");
+    td.textContent = value == null ? "-" : String(value);
+    tr.appendChild(td);
+  });
+
+  const actionCell = document.createElement("td");
+  const actionWrap = document.createElement("div");
+  actionWrap.className = "task-actions";
+  (item.actions || []).forEach((taskAction) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = taskAction.danger ? "task-action danger" : "task-action";
+    button.dataset.taskAction = taskAction.action;
+    if (taskAction.id) {
+      button.dataset.itemId = taskAction.id;
+    }
+    if (taskAction.enabled !== undefined) {
+      button.dataset.enabled = String(taskAction.enabled);
+    }
+    if (taskAction.payload) {
+      button.dataset.payload = JSON.stringify(taskAction.payload);
+    }
+    button.textContent = taskAction.label;
+    actionWrap.appendChild(button);
+  });
+  actionCell.appendChild(actionWrap);
+  tr.appendChild(actionCell);
+  return tr;
 }
 
 function row(values) {

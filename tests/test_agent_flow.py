@@ -65,6 +65,37 @@ def test_create_then_update_reminder_keeps_context():
     assert state["reminders"][0]["time_text"].endswith("07:30")
 
 
+def test_reminder_and_env_rule_can_be_toggled_and_deleted():
+    agent = make_agent()
+    agent.reset("crud")
+
+    first = agent.chat("crud", "明早7点提醒奶奶吃降压药")
+    agent.chat("crud", "明早8点提醒奶奶吃阿司匹林")
+    first_id = first["tool_events"][0]["output"]["reminder"]["id"]
+
+    disabled = agent.set_reminder_enabled("crud", first_id, False)
+    assert disabled["status"] == "ok"
+    assert next(item for item in disabled["state"]["reminders"] if item["id"] == first_id)["enabled"] is False
+
+    deleted = agent.delete_reminder("crud", first_id)
+    assert deleted["status"] == "ok"
+    assert all(item["id"] != first_id for item in deleted["state"]["reminders"])
+
+    new_reminder = agent.chat("crud", "明早9点提醒奶奶吃维生素")
+    assert new_reminder["tool_events"][0]["output"]["reminder"]["id"] == "rem-003"
+
+    rule_result = agent.chat("crud", "如果卧室低于20度，晚上9点后自动开空调到24度")
+    rule_id = rule_result["tool_events"][0]["output"]["rule"]["id"]
+
+    rule_disabled = agent.set_env_rule_enabled("crud", rule_id, False)
+    assert rule_disabled["status"] == "ok"
+    assert rule_disabled["state"]["env_rules"][0]["enabled"] is False
+
+    rule_deleted = agent.delete_env_rule("crud", rule_id)
+    assert rule_deleted["status"] == "ok"
+    assert rule_deleted["state"]["env_rules"] == []
+
+
 def test_environment_rule_is_saved():
     agent = make_agent()
     agent.reset("s2")
@@ -132,6 +163,10 @@ def test_rag_returns_local_reference_after_reminder_context():
     assert result["intent"] == "knowledge_query"
     assert result["knowledge_refs"]
     assert "本地知识库" in result["assistant_text"]
+    assert "氨氯地平" in result["assistant_text"]
+    assert result["knowledge_refs"][0]["title"] == "氨氯地平（amlodipine）"
+    assert "可在一天中的任意时间服用" in result["assistant_text"]
+    assert not result["assistant_text"].startswith("根据本地知识库《饭前饭后与服药时间说明》：**适用问题**")
 
 
 def test_tool_short_redirects_knowledge_questions_without_rag():

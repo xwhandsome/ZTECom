@@ -1,13 +1,21 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+from collections.abc import Callable
 from typing import Any
 
 from .models import PlanStep, SessionState, ToolEvent, now_iso
 
 
 def _next_id(prefix: str, items: list[dict[str, Any]]) -> str:
-    return f"{prefix}-{len(items) + 1:03d}"
+    max_index = 0
+    for item in items:
+        raw_id = str(item.get("id", ""))
+        if raw_id.startswith(f"{prefix}-"):
+            suffix = raw_id.removeprefix(f"{prefix}-")
+            if suffix.isdigit():
+                max_index = max(max_index, int(suffix))
+    return f"{prefix}-{max_index + 1:03d}"
 
 
 def _device_key(room: str | None, device: str | None) -> str:
@@ -28,6 +36,9 @@ def _format_time_text(dt: datetime) -> str:
 
 
 class ToolExecutor:
+    def __init__(self, id_provider: Callable[[str, SessionState, list[dict[str, Any]]], str] | None = None) -> None:
+        self._id_provider = id_provider
+
     def execute(self, state: SessionState, step: PlanStep) -> ToolEvent:
         try:
             handler = getattr(self, f"_handle_{step.tool_name}")
@@ -43,10 +54,15 @@ class ToolExecutor:
             step.status = "failed"
             return ToolEvent(step.tool_name, step.args, {"error": str(exc)}, False)
 
+    def _next_id(self, prefix: str, state: SessionState, items: list[dict[str, Any]]) -> str:
+        if self._id_provider is not None:
+            return self._id_provider(prefix, state, items)
+        return _next_id(prefix, items)
+
     def _handle_create_reminder(self, state: SessionState, args: dict[str, Any]) -> dict[str, Any]:
         ts = now_iso()
         reminder = {
-            "id": _next_id("rem", state.reminders),
+            "id": self._next_id("rem", state, state.reminders),
             "person": args.get("person") or state.profile.get("elder_name", "奶奶"),
             "medicine": args["medicine"],
             "time": args["time"],
@@ -105,7 +121,7 @@ class ToolExecutor:
 
     def _handle_upsert_env_rule(self, state: SessionState, args: dict[str, Any]) -> dict[str, Any]:
         rule = {
-            "id": _next_id("rule", state.env_rules),
+            "id": self._next_id("rule", state, state.env_rules),
             "room": args["room"],
             "comparator": args["comparator"],
             "threshold": args["threshold"],

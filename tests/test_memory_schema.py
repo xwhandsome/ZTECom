@@ -43,3 +43,17 @@ def test_memory_store_uses_relational_tables():
         "SELECT input_json FROM tool_events WHERE session_id = 'schema' AND tool_name = 'create_reminder'"
     ).fetchone()
     assert json.loads(event["input_json"])["medicine"] == "降压药"
+
+
+def test_reminder_ids_are_unique_across_sessions():
+    store = MemoryStore(":memory:")
+    agent = CareAgent(memory=store, rag=KeywordRAG())
+
+    agent.chat("first", "明早7点提醒奶奶吃降压药")
+    agent.chat("second", "明早7点提醒奶奶吃降压药")
+
+    first_id = agent.state("first")["reminders"][0]["id"]
+    second_id = agent.state("second")["reminders"][0]["id"]
+
+    assert first_id == "rem-001"
+    assert second_id == "rem-002"

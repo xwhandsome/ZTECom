@@ -8,7 +8,7 @@ from typing import Any
 
 from .llm_adapter import LLMAdapter
 from .memory import MemoryStore, trim_event_history
-from .models import IntentResult, PlanStep, SessionState
+from .models import IntentResult, PlanStep, SessionState, now_iso
 from .nlu import (
     RuleNLU,
     extract_action,
@@ -49,6 +49,14 @@ TOOL_BY_INTENT = {
 KNOWN_INTENTS = set(TOOL_BY_INTENT) | {"knowledge_query", "unknown"}
 CHAT_MODES = {"health_assistant", "tool_short"}
 TOOL_SHORT_REDIRECT = "请在健康助手中提问，我这里只处理提醒、设备、环境和通知。"
+MEDICINE_CONTEXT_ALIASES = {
+    "降压药": ["氨氯地平", "amlodipine", "高血压"],
+    "退烧药": ["对乙酰氨基酚", "acetaminophen", "paracetamol", "发热", "疼痛"],
+    "胆固醇药": ["阿托伐他汀", "atorvastatin", "胆固醇"],
+    "血栓药": ["氯吡格雷", "clopidogrel", "血栓"],
+    "胃药": ["奥美拉唑", "omeprazole", "胃酸", "胃溃疡"],
+    "骨质疏松药": ["阿仑膦酸钠", "alendronic acid", "骨质疏松"],
+}
 
 
 class CareAgent:
@@ -62,7 +70,11 @@ class CareAgent:
         self.rag = rag or KeywordRAG()
         self.llm = llm or LLMAdapter()
         self.nlu = RuleNLU()
-        self.tools = ToolExecutor()
+        self.tools = ToolExecutor(self._next_tool_id)
+
+    def _next_tool_id(self, prefix: str, state: SessionState, items: list[dict[str, Any]]) -> str:
+        del state
+        return self.memory.next_item_id(prefix, items)
 
     def chat(self, session_id: str, user_text: str, mode: str = "health_assistant") -> dict[str, Any]:
         started = time.perf_counter()
@@ -213,12 +225,100 @@ class CareAgent:
     def state(self, session_id: str) -> dict[str, Any]:
         return self.memory.load(session_id).to_dict()
 
+    def delete_reminder(self, session_id: str, reminder_id: str) -> dict[str, Any]:
+        state = self.memory.load(session_id)
+        reminder = next((item for item in state.reminders if item.get("id") == reminder_id), None)
+        if reminder is None:
+            return self._mutation_response(state, "not_found", "reminder", reminder_id, "delete")
+        state.reminders = [item for item in state.reminders if item.get("id") != reminder_id]
+        if state.last_reminder_id == reminder_id:
+            state.last_reminder_id = state.reminders[-1]["id"] if state.reminders else None
+        self._record_mutation_event(state, "delete_reminder", {"reminder_id": reminder_id}, {"reminder": reminder})
+        self.memory.save(state)
+        return self._mutation_response(state, "ok", "reminder", reminder_id, "delete")
+
+    def set_reminder_enabled(self, session_id: str, reminder_id: str, enabled: bool) -> dict[str, Any]:
+        state = self.memory.load(session_id)
+        reminder = next((item for item in state.reminders if item.get("id") == reminder_id), None)
+        if reminder is None:
+            return self._mutation_response(state, "not_found", "reminder", reminder_id, "set_enabled")
+        reminder["enabled"] = bool(enabled)
+        reminder["updated_at"] = now_iso()
+        self._record_mutation_event(
+            state,
+            "set_reminder_enabled",
+            {"reminder_id": reminder_id, "enabled": bool(enabled)},
+            {"reminder": reminder},
+        )
+        self.memory.save(state)
+        return self._mutation_response(state, "ok", "reminder", reminder_id, "set_enabled")
+
+    def delete_env_rule(self, session_id: str, rule_id: str) -> dict[str, Any]:
+        state = self.memory.load(session_id)
+        rule = next((item for item in state.env_rules if item.get("id") == rule_id), None)
+        if rule is None:
+            return self._mutation_response(state, "not_found", "env_rule", rule_id, "delete")
+        state.env_rules = [item for item in state.env_rules if item.get("id") != rule_id]
+        self._record_mutation_event(state, "delete_env_rule", {"rule_id": rule_id}, {"rule": rule})
+        self.memory.save(state)
+        return self._mutation_response(state, "ok", "env_rule", rule_id, "delete")
+
+    def set_env_rule_enabled(self, session_id: str, rule_id: str, enabled: bool) -> dict[str, Any]:
+        state = self.memory.load(session_id)
+        rule = next((item for item in state.env_rules if item.get("id") == rule_id), None)
+        if rule is None:
+            return self._mutation_response(state, "not_found", "env_rule", rule_id, "set_enabled")
+        rule["enabled"] = bool(enabled)
+        self._record_mutation_event(
+            state,
+            "set_env_rule_enabled",
+            {"rule_id": rule_id, "enabled": bool(enabled)},
+            {"rule": rule},
+        )
+        self.memory.save(state)
+        return self._mutation_response(state, "ok", "env_rule", rule_id, "set_enabled")
+
     def health(self) -> dict[str, Any]:
         return {
             "status": "ok",
             "python_runtime": sys.version,
             "llm": self.llm.status(probe_runtime=True).to_dict(),
             "kb_chunks": len(self.rag.chunks),
+        }
+
+    def _record_mutation_event(
+        self,
+        state: SessionState,
+        tool_name: str,
+        input_payload: dict[str, Any],
+        output_payload: dict[str, Any],
+    ) -> None:
+        state.recent_tool_events.append(
+            {
+                "tool_name": tool_name,
+                "input": input_payload,
+                "output": output_payload,
+                "success": True,
+                "ts": now_iso(),
+            }
+        )
+        state.recent_tool_events = trim_event_history(state.recent_tool_events)
+
+    def _mutation_response(
+        self,
+        state: SessionState,
+        status: str,
+        item_type: str,
+        item_id: str,
+        action: str,
+    ) -> dict[str, Any]:
+        return {
+            "status": status,
+            "session_id": state.session_id,
+            "item_type": item_type,
+            "item_id": item_id,
+            "action": action,
+            "state": state.to_dict(),
         }
 
     def _maybe_apply_llm(
@@ -462,16 +562,41 @@ class CareAgent:
 
     def _answer_with_rag(self, user_text: str, state: SessionState) -> tuple[str, list[dict[str, Any]]]:
         context_terms = []
+        context_medicine = None
         if state.last_reminder_id:
             reminder = next((item for item in state.reminders if item.get("id") == state.last_reminder_id), None)
             if reminder and reminder.get("medicine"):
-                context_terms.append(reminder["medicine"])
+                context_medicine = reminder["medicine"]
+                context_terms.append(context_medicine)
+                context_terms.extend(MEDICINE_CONTEXT_ALIASES.get(context_medicine, []))
         refs = self.rag.search(user_text, context_terms=context_terms)
         if not refs:
             return "本地知识库没有相关内容。我不能编造医疗建议，建议以医生或药品说明书为准。", []
-        first = refs[0]
-        reply = f"根据本地知识库《{first.title}》：{first.snippet}"
+        reply = self._compose_rag_reply(user_text, refs, context_medicine)
         return reply, [ref.to_dict() for ref in refs]
+
+    def _compose_rag_reply(self, user_text: str, refs: list[Any], context_medicine: str | None) -> str:
+        first = refs[0]
+        prefix = ""
+        if context_medicine and "这个药" in user_text:
+            display_medicine = MEDICINE_CONTEXT_ALIASES.get(context_medicine, [context_medicine])[0]
+            prefix = f"这里的“这个药”按最近提醒理解为：{display_medicine}。"
+
+        cleaned = self._clean_knowledge_snippet(first.snippet)
+        if prefix:
+            return f"{prefix}根据本地知识库《{first.title}》：{cleaned}"
+        return f"根据本地知识库《{first.title}》：{cleaned}"
+
+    def _clean_knowledge_snippet(self, snippet: str) -> str:
+        text = re.sub(r"\*\*([^*]+)\*\*：?", r"\1：", snippet)
+        text = re.sub(r"#+\s*", "", text)
+        text = re.sub(r"\s+", " ", text).strip()
+        for heading in ["适用问题：", "关键词："]:
+            if text.startswith(heading):
+                parts = text.split("系统口径：", 1)
+                if len(parts) == 2:
+                    return parts[1].strip()
+        return text
 
     def _requires_confirmation(self, result: IntentResult, plan_steps: list[PlanStep]) -> bool:
         if result.intent == "notify_family":

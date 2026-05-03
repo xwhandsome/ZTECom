@@ -26,6 +26,10 @@ class ResetRequest(BaseModel):
     session_id: str = Field(default="demo")
 
 
+class EnabledRequest(BaseModel):
+    enabled: bool
+
+
 def create_app(engine: CareAgent | None = None) -> FastAPI:
     app = FastAPI(title="ZTECom Local Elder Care Agent", version="0.1.0")
     app.state.engine = engine or CareAgent()
@@ -56,5 +60,21 @@ def create_app(engine: CareAgent | None = None) -> FastAPI:
     @app.post("/api/reset")
     def reset(req: ResetRequest) -> dict[str, Any]:
         return app.state.engine.reset(req.session_id)
+
+    @app.delete("/api/reminders/{session_id}/{reminder_id}")
+    def delete_reminder(session_id: str, reminder_id: str) -> dict[str, Any]:
+        return app.state.engine.delete_reminder(session_id, reminder_id)
+
+    @app.post("/api/reminders/{session_id}/{reminder_id}/enabled")
+    def set_reminder_enabled(session_id: str, reminder_id: str, req: EnabledRequest) -> dict[str, Any]:
+        return app.state.engine.set_reminder_enabled(session_id, reminder_id, req.enabled)
+
+    @app.delete("/api/env-rules/{session_id}/{rule_id}")
+    def delete_env_rule(session_id: str, rule_id: str) -> dict[str, Any]:
+        return app.state.engine.delete_env_rule(session_id, rule_id)
+
+    @app.post("/api/env-rules/{session_id}/{rule_id}/enabled")
+    def set_env_rule_enabled(session_id: str, rule_id: str, req: EnabledRequest) -> dict[str, Any]:
+        return app.state.engine.set_env_rule_enabled(session_id, rule_id, req.enabled)
 
     return app

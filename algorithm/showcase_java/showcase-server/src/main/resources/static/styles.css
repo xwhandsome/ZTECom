@@ -358,14 +358,14 @@ th {
 
 .assistant-layout {
     display: grid;
-    grid-template-columns: minmax(0, 1.15fr) minmax(320px, 0.85fr);
+    grid-template-columns: 1fr;
     gap: 14px;
 }
 
 .chat-panel {
     display: grid;
-    grid-template-rows: auto minmax(300px, 1fr) auto auto;
-    min-height: 640px;
+    grid-template-rows: auto minmax(420px, 1fr) auto auto;
+    min-height: 0;
 }
 
 .chat-log,
@@ -378,17 +378,20 @@ th {
     border: 1px solid var(--line);
     border-radius: 8px;
     background: #fbfcfd;
+    line-height: 1.55;
 }
 
 .message {
-    max-width: 86%;
+    max-width: 96%;
     padding: 10px 12px;
     border-radius: 8px;
     background: #eef3f0;
     overflow-wrap: anywhere;
+    white-space: pre-wrap;
 }
 
 .message.user {
+    max-width: 82%;
     justify-self: end;
     background: #e9f1f8;
 }
@@ -424,9 +427,16 @@ th {
 
 .analysis-grid {
     display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: minmax(170px, 1.4fr) minmax(88px, 0.75fr) minmax(105px, 0.85fr);
     gap: 10px;
     margin-bottom: 12px;
+}
+
+.analysis-grid strong {
+    font-size: 20px;
+    line-height: 1.25;
+    overflow-wrap: normal;
+    word-break: normal;
 }
 
 .json-block {
@@ -462,6 +472,20 @@ pre {
     border: 1px solid var(--line);
     border-radius: 8px;
     background: #fbfcfd;
+    overflow-wrap: anywhere;
+}
+
+.ref-title {
+    display: block;
+    margin-bottom: 6px;
+    line-height: 1.35;
+}
+
+.ref-snippet {
+    color: var(--muted);
+    font-size: 14px;
+    line-height: 1.55;
+    white-space: pre-wrap;
 }
 
 .muted {
@@ -470,6 +494,32 @@ pre {
 
 .disabled-action {
     color: var(--muted);
+}
+
+.task-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.task-action {
+    min-height: 30px;
+    padding: 0 10px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: #fff;
+    color: var(--ink);
+    font-weight: 700;
+}
+
+.task-action.danger {
+    border-color: #efc0bc;
+    color: var(--red);
+}
+
+.task-action:disabled {
+    cursor: not-allowed;
+    opacity: 0.55;
 }
 
 .floating-button {
@@ -506,7 +556,14 @@ pre {
 }
 
 .float-confirm {
+    align-items: center;
     justify-content: flex-end;
+}
+
+.float-confirm span {
+    margin-right: auto;
+    font-weight: 700;
+    overflow-wrap: anywhere;
 }
 
 .hidden {
@@ -555,5 +612,20 @@ pre {
     .floating-chat {
         right: 16px;
         bottom: 116px;
+    }
+}
+
+@media (min-width: 1240px) {
+    .assistant-layout {
+        align-items: start;
+        grid-template-columns: minmax(560px, 1.25fr) minmax(380px, 0.75fr);
+    }
+
+    .chat-panel {
+        min-height: 640px;
+    }
+
+    .chat-log {
+        max-height: calc(100vh - 230px);
     }
 }

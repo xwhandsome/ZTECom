@@ -35,12 +35,14 @@ public class PythonAgentClient {
         this.baseUrl = trimTrailingSlash(baseUrl);
         this.httpClient = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(2))
+                .version(HttpClient.Version.HTTP_1_1)
                 .build();
     }
 
     public ProxyResult get(String path) {
         HttpRequest request = HttpRequest.newBuilder(resolve(path))
                 .timeout(Duration.ofSeconds(5))
+                .version(HttpClient.Version.HTTP_1_1)
                 .GET()
                 .build();
         return send(request);
@@ -49,15 +51,30 @@ public class PythonAgentClient {
     public ProxyResult post(String path, Map<String, Object> payload) {
         try {
             String json = objectMapper.writeValueAsString(payload);
-            HttpRequest request = HttpRequest.newBuilder(resolve(path))
-                    .timeout(Duration.ofSeconds(8))
-                    .header("Content-Type", "application/json")
-                    .POST(HttpRequest.BodyPublishers.ofString(json, StandardCharsets.UTF_8))
-                    .build();
-            return send(request);
+            return postRaw(path, json);
         } catch (RuntimeException e) {
             return offline("请求序列化失败: " + e.getMessage());
         }
+    }
+
+    public ProxyResult postRaw(String path, String json) {
+        String payload = (json == null || json.isBlank()) ? "{}" : json;
+        HttpRequest request = HttpRequest.newBuilder(resolve(path))
+                .timeout(Duration.ofSeconds(8))
+                .version(HttpClient.Version.HTTP_1_1)
+                .header("Content-Type", "application/json; charset=utf-8")
+                .POST(HttpRequest.BodyPublishers.ofString(payload, StandardCharsets.UTF_8))
+                .build();
+        return send(request);
+    }
+
+    public ProxyResult delete(String path) {
+        HttpRequest request = HttpRequest.newBuilder(resolve(path))
+                .timeout(Duration.ofSeconds(5))
+                .version(HttpClient.Version.HTTP_1_1)
+                .DELETE()
+                .build();
+        return send(request);
     }
 
     private ProxyResult send(HttpRequest request) {

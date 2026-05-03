@@ -1,5 +1,7 @@
 # 启动代码
 ``` powershell
-cd E:\code\ZTECom\algorithm\showcase_java\showcase-server
-powershell -ExecutionPolicy Bypass -File .\start-showcase.ps1
+conda activate RAG
+cd E:\code\ZTECom
+
+powershell -ExecutionPolicy Bypass -File .\algorithm\showcase_java\showcase-server\start-showcase.ps1 -RestartPython 1 -RestartJava 1
 ```

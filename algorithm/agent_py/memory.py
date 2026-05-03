@@ -212,6 +212,16 @@ class MemoryStore:
             conn.execute("DELETE FROM sessions")
             conn.commit()
 
+    def next_item_id(self, prefix: str, items: list[dict[str, Any]] | None = None) -> str:
+        table_by_prefix = {"rem": "reminders", "rule": "env_rules"}
+        max_index = self._max_id_index(items or [], prefix)
+        table = table_by_prefix.get(prefix)
+        if table is not None:
+            with self._connect() as conn:
+                rows = conn.execute(f"SELECT id FROM {table} WHERE id LIKE ?", (f"{prefix}-%",)).fetchall()
+                max_index = max(max_index, self._max_id_index([{"id": row["id"]} for row in rows], prefix))
+        return f"{prefix}-{max_index + 1:03d}"
+
     def _load_state(self, conn: sqlite3.Connection, session: sqlite3.Row) -> SessionState:
         session_id = session["session_id"]
         contacts = {
@@ -544,6 +554,16 @@ class MemoryStore:
         if isinstance(value, float) and value.is_integer():
             return int(value)
         return value
+
+    def _max_id_index(self, items: list[dict[str, Any]], prefix: str) -> int:
+        max_index = 0
+        for item in items:
+            raw_id = str(item.get("id", ""))
+            if raw_id.startswith(f"{prefix}-"):
+                suffix = raw_id.removeprefix(f"{prefix}-")
+                if suffix.isdigit():
+                    max_index = max(max_index, int(suffix))
+        return max_index
 
 
 def trim_event_history(events: list[dict[str, Any]], limit: int = 30) -> list[dict[str, Any]]:

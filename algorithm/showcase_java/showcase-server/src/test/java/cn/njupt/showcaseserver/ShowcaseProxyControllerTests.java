@@ -5,6 +5,7 @@ import com.sun.net.httpserver.HttpServer;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.ResponseEntity;
+import org.springframework.mock.web.MockHttpServletRequest;
 import tools.jackson.databind.ObjectMapper;
 
 import java.io.IOException;
@@ -64,18 +65,28 @@ class ShowcaseProxyControllerTests {
     void proxiesChatStateResetAndConfirm() {
         ShowcaseProxyController controller = controller();
 
-        ResponseEntity<Map<String, Object>> chat = controller.chat(Map.of(
-                "session_id", "demo",
-                "user_text", "明早7点提醒奶奶吃降压药",
-                "mode", "tool_short"
-        ));
+        ResponseEntity<Map<String, Object>> chat = controller.chat(jsonRequest("""
+                {"session_id":"demo","user_text":"明早7点提醒奶奶吃降压药","mode":"tool_short"}
+                """));
         ResponseEntity<Map<String, Object>> state = controller.state("demo");
-        ResponseEntity<Map<String, Object>> reset = controller.reset(Map.of("session_id", "demo"));
-        ResponseEntity<Map<String, Object>> confirm = controller.confirm(Map.of(
-                "session_id", "demo",
-                "action_id", "act-1",
-                "approved", true
-        ));
+        ResponseEntity<Map<String, Object>> reset = controller.reset(jsonRequest("""
+                {"session_id":"demo"}
+                """));
+        ResponseEntity<Map<String, Object>> confirm = controller.confirm(jsonRequest("""
+                {"session_id":"demo","action_id":"act-1","approved":true}
+                """));
+        ResponseEntity<Map<String, Object>> reminderEnabled = controller.setReminderEnabled(
+                "demo",
+                "rem-001",
+                jsonRequest("{\"enabled\":false}")
+        );
+        ResponseEntity<Map<String, Object>> reminderDeleted = controller.deleteReminder("demo", "rem-001");
+        ResponseEntity<Map<String, Object>> ruleEnabled = controller.setEnvRuleEnabled(
+                "demo",
+                "rule-001",
+                jsonRequest("{\"enabled\":false}")
+        );
+        ResponseEntity<Map<String, Object>> ruleDeleted = controller.deleteEnvRule("demo", "rule-001");
 
         assertNotNull(chat.getBody());
         assertEquals("create_reminder", chat.getBody().get("intent"));
@@ -86,6 +97,14 @@ class ShowcaseProxyControllerTests {
         assertEquals("demo", reset.getBody().get("session_id"));
         assertNotNull(confirm.getBody());
         assertEquals("已模拟通知儿子", confirm.getBody().get("assistant_text"));
+        assertNotNull(reminderEnabled.getBody());
+        assertEquals("set_enabled", reminderEnabled.getBody().get("action"));
+        assertNotNull(reminderDeleted.getBody());
+        assertEquals("delete", reminderDeleted.getBody().get("action"));
+        assertNotNull(ruleEnabled.getBody());
+        assertEquals("env_rule", ruleEnabled.getBody().get("item_type"));
+        assertNotNull(ruleDeleted.getBody());
+        assertEquals("rule-001", ruleDeleted.getBody().get("item_id"));
     }
 
     private static void respond(HttpExchange exchange, String body) throws IOException {
@@ -99,6 +118,13 @@ class ShowcaseProxyControllerTests {
     private ShowcaseProxyController controller() {
         PythonAgentClient client = new PythonAgentClient(new ObjectMapper(), PYTHON_BASE_URL);
         return new ShowcaseProxyController(client);
+    }
+
+    private MockHttpServletRequest jsonRequest(String body) {
+        MockHttpServletRequest request = new MockHttpServletRequest();
+        request.setContentType("application/json; charset=utf-8");
+        request.setContent(body.getBytes(StandardCharsets.UTF_8));
+        return request;
     }
 
     private static String startPythonServer() {
@@ -118,6 +144,18 @@ class ShowcaseProxyControllerTests {
                     """));
             pythonServer.createContext("/api/reset", exchange -> respond(exchange, """
                     {"session_id":"demo","state":{"reminders":[]}}
+                    """));
+            pythonServer.createContext("/api/reminders/demo/rem-001/enabled", exchange -> respond(exchange, """
+                    {"status":"ok","session_id":"demo","item_type":"reminder","item_id":"rem-001","action":"set_enabled","state":{"reminders":[{"id":"rem-001","enabled":false}]}}
+                    """));
+            pythonServer.createContext("/api/reminders/demo/rem-001", exchange -> respond(exchange, """
+                    {"status":"ok","session_id":"demo","item_type":"reminder","item_id":"rem-001","action":"delete","state":{"reminders":[]}}
+                    """));
+            pythonServer.createContext("/api/env-rules/demo/rule-001/enabled", exchange -> respond(exchange, """
+                    {"status":"ok","session_id":"demo","item_type":"env_rule","item_id":"rule-001","action":"set_enabled","state":{"env_rules":[{"id":"rule-001","enabled":false}]}}
+                    """));
+            pythonServer.createContext("/api/env-rules/demo/rule-001", exchange -> respond(exchange, """
+                    {"status":"ok","session_id":"demo","item_type":"env_rule","item_id":"rule-001","action":"delete","state":{"env_rules":[]}}
                     """));
             pythonServer.createContext("/api/non-json", exchange -> respond(exchange, "<html>bad gateway</html>"));
             pythonServer.start();

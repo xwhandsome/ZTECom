@@ -38,6 +38,9 @@ def test_memory_store_uses_relational_tables():
     assert conn.execute("SELECT count(*) FROM reminders WHERE session_id = 'schema'").fetchone()[0] == 1
     assert conn.execute("SELECT count(*) FROM device_states WHERE session_id = 'schema'").fetchone()[0] == 4
     assert conn.execute("SELECT count(*) FROM sensors WHERE session_id = 'schema'").fetchone()[0] == 2
+    assert "brightness" in {
+        row["name"] for row in conn.execute("PRAGMA table_info(device_states)").fetchall()
+    }
 
     event = conn.execute(
         "SELECT input_json FROM tool_events WHERE session_id = 'schema' AND tool_name = 'create_reminder'"

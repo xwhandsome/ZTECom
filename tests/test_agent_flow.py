@@ -36,6 +36,20 @@ class AliasSlotLLM:
         )
 
 
+class RagSummaryLLM:
+    def status(self, probe_runtime=False):
+        return FakeLLMStatus()
+
+    def parse_intent_json(self, user_text, slots):
+        raise AssertionError("RAG knowledge questions should not use the NLU JSON parser")
+
+    def synthesize_rag_answer(self, user_text, refs, context_hint=None):
+        assert len(refs) == 1
+        assert "氨氯地平" in refs[0]["title"]
+        assert context_hint and "氨氯地平" in context_hint
+        return "LLM归纳：氨氯地平通常可在一天中的任意时间服用，建议每天固定在相近时间。具体剂量和调整仍应遵医嘱。", FakeLLMStatus()
+
+
 class FailingLLM:
     def status(self, probe_runtime=False):
         return FakeLLMStatus()
@@ -124,6 +138,22 @@ def test_sensor_status_question_uses_tool_not_rag():
     assert result["knowledge_refs"] == []
 
 
+def test_light_brightness_can_be_adjusted_by_dialogue():
+    agent = make_agent()
+    agent.reset("light")
+
+    result = agent.chat("light", "把卧室灯亮度调到70%")
+    state = agent.state("light")
+
+    assert result["intent"] == "control_device"
+    assert result["tool_events"][0]["tool_name"] == "control_device"
+    assert result["slots"]["device"] == "灯"
+    assert result["slots"]["brightness"] == 70
+    assert state["device_state"]["卧室:灯"]["status"] == "on"
+    assert state["device_state"]["卧室:灯"]["brightness"] == 70
+    assert "亮度70%" in result["assistant_text"]
+
+
 def test_known_intent_missing_slot_uses_slot_fill_without_llm():
     agent = CareAgent(memory=MemoryStore(":memory:"), rag=KeywordRAG(), llm=FailingLLM())
     agent.reset("s2_slot_fill")
@@ -167,6 +197,33 @@ def test_rag_returns_local_reference_after_reminder_context():
     assert result["knowledge_refs"][0]["title"] == "氨氯地平（amlodipine）"
     assert "可在一天中的任意时间服用" in result["assistant_text"]
     assert not result["assistant_text"].startswith("根据本地知识库《饭前饭后与服药时间说明》：**适用问题**")
+
+
+def test_medicine_recommendation_question_uses_rag_not_reminder_creation():
+    agent = make_agent()
+    agent.reset("s4_question")
+
+    result = agent.chat("s4_question", "发烧了吃什么药？")
+
+    assert result["intent"] == "knowledge_query"
+    assert result["tool_events"] == []
+    assert result["missing_slots"] == []
+    assert result["knowledge_refs"]
+    assert result["knowledge_refs"][0]["title"] == "对乙酰氨基酚（Acetaminophen）"
+
+
+def test_rag_uses_llm_summary_when_model_is_available():
+    agent = CareAgent(memory=MemoryStore(":memory:"), rag=KeywordRAG(), llm=RagSummaryLLM())
+    agent.reset("s4_llm")
+
+    agent.chat("s4_llm", "明早7点提醒奶奶吃降压药")
+    result = agent.chat("s4_llm", "这个药饭前还是饭后吃")
+
+    assert result["intent"] == "knowledge_query"
+    assert result["llm_used"] is True
+    assert "LLM归纳" in result["assistant_text"]
+    assert "氨氯地平" in result["assistant_text"]
+    assert result["knowledge_refs"][0]["title"] == "氨氯地平（amlodipine）"
 
 
 def test_tool_short_redirects_knowledge_questions_without_rag():
